@@ -3,51 +3,40 @@ body:
   - type: textarea
     attributes:
       label: Coneixements previs
-      description: Quins coneixements previs existeixen en base al dubte?
+      description: |
+        Quins coneixements previs existeixen en base al dubte? Si us plau, descriu quins coneixements previs existeixen en base al dubte.
+        Per una millor comprensió, s'hauria d'incloure, mínimament, un coneixement previ...
       value: |
-        <!--
-        Per favor, descriu quins coneixements previs existeixen en base al dubte.
-        Per una millor comprensió, s'hauria d'incloure, mínimament, un coneixement previ.
-        -->
         - Primer coneixement previ...
         - Segon coneixement previ...
         ...
-      render: markdown
     validations:
       required: true
   - type: textarea
     attributes:
       label: Dubte
-      description: Quin és el dubte que tens?
-      value: |
-        <!--
-        Per favor, descriu el dubte que tens.
-        -->
+      description: Quin és el dubte que tens? Si us plau, descriu el dubte que tens.
+      placeholder: |
         Dubte 1...?
-        <!--
+
+
         Si disposes de més d'un dubte relacionat amb el mateix tema, pots afegir-ne més.
         - Dubte 1...?
         - Dubte 2...?
         ...
-        -->
-      render: markdown
     validations:
       required: true
   - type: textarea
     attributes:
       label: Solució proposada
-      description: Quina solució proposaries?
-      value: |
-        <!--
-        Per favor, descriu la solució que proposaries.
-        -->
+      description: Quina solució proposaries? Si us plau, descriu la solució que proposaries.
+      placeholder: |
         Solució 1...
-        <!--
+
+
         Si disposes de més d'una solució, pots afegir-ne més.
         - Solució 1...
         - Solució 2...
         ...
-        -->
-      render: markdown
     validations:
       required: true
