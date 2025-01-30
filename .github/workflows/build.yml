@@ -1,0 +1,187 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+name: 🏗️ Build
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        default: test
+        type: string
+      image:
+        required: true
+        type: string
+      version:
+        type: string
+    outputs:
+      version:
+        value: ${{ inputs.version }}
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: 🐳 Docker
+    runs-on: ubuntu-latest
+    environment: Test
+
+    steps:
+      # https://github.com/actions/checkout/tree/11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # https://github.com/docker/setup-buildx-action/tree/6524bf65af31da8d45b59e8c27de4bd072b392f5
+      - uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5
+
+      # https://github.com/sigstore/cosign-installer/tree/dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da
+        if: inputs.version
+        with:
+          cosign-release: "v2.2.4"
+
+      # https://github.com/docker/login-action/tree/327cd5a69de6c009b9ce71bce8395f28e651bf99
+      - name: 🪪 Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@327cd5a69de6c009b9ce71bce8395f28e651bf99
+        if: inputs.version
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # https://github.com/docker/metadata-action/tree/8e1d5461f02b7886d3c1a774bfbd873650445aa2
+      - uses: docker/metadata-action@8e1d5461f02b7886d3c1a774bfbd873650445aa2
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}},value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,manifest-descriptor,index,index-descriptor
+
+      # https://github.com/actions/cache/tree/1bd1e32a3bdc45362d1e726936510720a7c30a57
+      - name: 📦 Cache Docker layers
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57
+        id: cache
+        with:
+          path: |
+            composer-cache
+            python-cache
+          key: ${{ runner.os }}-docker-${{ hashFiles('**/Dockerfile') }}
+
+      # https://github.com/reproducible-containers/buildkit-cache-dance/tree/5b6db76d1da5c8b307d5d2e0706d266521b710de
+      - name: 📦 Load cache
+        uses: reproducible-containers/buildkit-cache-dance@5b6db76d1da5c8b307d5d2e0706d266521b710de
+        with:
+          cache-map: |
+            {
+              "composer-cache": "/tmp/cache",
+              "python-cache": "/root/.cache/pip"
+            }
+          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+
+      # https://github.com/docker/build-push-action/tree/67a2d409c0a876cbe6b11854e3e25193efe4e62d
+      - name: 🏗️ Build test stage
+        uses: docker/build-push-action@67a2d409c0a876cbe6b11854e3e25193efe4e62d
+        id: build-test
+        with:
+          load: true
+          target: test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        env:
+          APP_ENV: test
+
+      - name: 🧪 Run tests
+        run: docker run --rm -v "$(pwd)/reports/${{ inputs.image }}:/reports" ${{ steps.build-test.outputs.imageid }}
+
+      # https://github.com/actions/upload-artifact/tree/65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+      - name: 📤 Upload coverage data
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        if: ${{ !cancelled() }}
+        with:
+          name: ${{ inputs.image }}-coverage
+          path: reports/${{ inputs.image }}
+          retention-days: 1
+
+      # https://github.com/docker/build-push-action/tree/67a2d409c0a876cbe6b11854e3e25193efe4e62d
+      - name: 🏗️ Build final stage ${{ inputs.version && 'and push to registry' }}
+        uses: docker/build-push-action@67a2d409c0a876cbe6b11854e3e25193efe4e62d
+        id: build-and-push
+        with:
+          build-args: |
+            IMAGE_VERSION=${{ inputs.version }}
+          push: ${{ !!inputs.version }}
+          target: final
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Sign the resulting Docker image digest except on PRs.
+      # This will only write to the public Rekor transparency log when the Docker
+      # repository is public to avoid leaking data.  If you would like to publish
+      # transparency data even for private images, pass --force to cosign below.
+      # https://github.com/sigstore/cosign
+      - name: 🖋️ Sign the published Docker image
+        if: inputs.version
+        env:
+          # https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        # This step uses the identity token to provision an ephemeral certificate
+        # against the sigstore community Fulcio instance.
+        run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+      # https://github.com/actions/attest-build-provenance/tree/7668571508540a607bdfd90a87a560489fe372eb
+      - name: 📝 Attest the build provenance
+        uses: actions/attest-build-provenance@7668571508540a607bdfd90a87a560489fe372eb
+        if: inputs.version
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ inputs.image }}
+          subject-digest: ${{ steps.build-and-push.outputs.digest }}
+          push-to-registry: true
+
+  report:
+    name: 🗂️ Upload reports
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() }}
+
+    steps:
+      # https://github.com/actions/checkout/tree/11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # https://github.com/actions/download-artifact/tree/fa0a91b85d4f404e444e00e005971372dc801d16
+      - name: 📥 Download coverage data
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
+        with:
+          name: ${{ inputs.image }}-coverage
+
+      # https://github.com/getsentry/action-release/tree/e769183448303de84c5a06aaaddf9da7be26d6c7
+      - name: 📟 Release to Sentry
+        uses: getsentry/action-release@e769183448303de84c5a06aaaddf9da7be26d6c7
+        with:
+          environment: ${{ inputs.environment }}
+          version: ${{ inputs.version || github.sha }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ inputs.image }}
+
+      # https://github.com/codecov/test-results-action/tree/4e79e65778be1cecd5df25e14af1eafb6df80ea9
+      - name: 🧮 Upload test results to Codecov
+        uses: codecov/test-results-action@4e79e65778be1cecd5df25e14af1eafb6df80ea9
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      # https://github.com/codecov/codecov-action/tree/1e68e06f1dbfde0e4cefc87efeba9e4643565303
+      - name: 📈 Upload coverage to Codecov
+        uses: codecov/codecov-action@1e68e06f1dbfde0e4cefc87efeba9e4643565303
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
